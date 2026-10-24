@@ -1,0 +1,369 @@
+// linalg: the Matrix type. A matrix of Floats with its sizes, made from
+// rows (`Matrix.fromRows`), as zeros or the identity, and the arithmetic
+// that has no operators in Tessel: `a.plus(b)`, `a.times(b)`,
+// `a.timesVector(x)`, `a.transposed()`.
+//
+// Sizes that don't fit together (adding a 2×3 to a 3×2, an index outside
+// the matrix) are a mistake in the code, like an index outside a list: they
+// stop the program with a message saying which sizes met.
+//
+// Author: Alexius Academia
+// Date: 2026-10-24
+
+// A matrix of Floats.
+//
+// Fields:
+//   rows: How many rows it has.
+//   columns: How many columns it has.
+//   values: Its values, row after row: the value in row i, column j (both
+//           from 0) is `values[i * columns + j]`. `at(i, j)` reads it.
+//
+// Example:
+//   let a = linalg.Matrix.fromRows([[1, 2], [3, 4]])
+//   print(a.at(1, 0))                  // 3.0
+//   print(a.times(a).describe())       // [  7.0000  10.0000 ]
+//                                      // [ 15.0000  22.0000 ]
+public struct Matrix {
+    rows: Int
+    columns: Int
+    values: [Float]
+
+    // A matrix of zeros, `rows` by `columns`.
+    static fn zeros(rows: Int, columns: Int) -> Matrix {
+        if rows < 0 || columns < 0 {
+            fail("a matrix can't be {rows}×{columns}")
+        }
+        var v: [Float] = []
+        for _ in 0..rows * columns {
+            v.append(0.0)
+        }
+        Matrix(rows: rows, columns: columns, values: v)
+    }
+
+    // The n×n identity matrix: ones on the diagonal, zeros elsewhere.
+    static fn identity(_ n: Int) -> Matrix {
+        var m = zeros(rows: n, columns: n)
+        for i in 0..n {
+            m.values[i * n + i] = 1.0
+        }
+        m
+    }
+
+    // A square matrix with `d` on its diagonal and zeros elsewhere.
+    static fn diagonal(_ d: [Float]) -> Matrix {
+        let n = d.count
+        var m = zeros(rows: n, columns: n)
+        for i in 0..n {
+            m.values[i * n + i] = d[i]
+        }
+        m
+    }
+
+    // A matrix from its rows, which must all be as long as each other.
+    //
+    // Example:
+    //   let a = linalg.Matrix.fromRows([[4, 1], [2, 3]])   // 2×2
+    static fn fromRows(_ list: [[Float]]) -> Matrix {
+        var c = 0
+        if list.count > 0 {
+            c = list[0].count
+        }
+        var v: [Float] = []
+        for (i, row) in list.enumerated() {
+            if row.count != c {
+                fail("row {i + 1} has {row.count} values, but row 1 has {c}")
+            }
+            v.appendAll(row)
+        }
+        Matrix(rows: list.count, columns: c, values: v)
+    }
+
+    // A matrix from its columns, which must all be as long as each other.
+    static fn fromColumns(_ list: [[Float]]) -> Matrix {
+        fromRows(list).transposed()
+    }
+
+    // The value in row i, column j (both from 0).
+    fn at(_ i: Int, _ j: Int) -> Float {
+        if i < 0 || i >= rows || j < 0 || j >= columns {
+            fail("({i}, {j}) is outside a {rows}×{columns} matrix")
+        }
+        values[i * columns + j]
+    }
+
+    // Sets the value in row i, column j (both from 0) to x.
+    fn set(_ i: Int, _ j: Int, _ x: Float) {
+        if i < 0 || i >= rows || j < 0 || j >= columns {
+            fail("({i}, {j}) is outside a {rows}×{columns} matrix")
+        }
+        values[i * columns + j] = x
+    }
+
+    // Row i (from 0), as a list.
+    fn row(_ i: Int) -> [Float] {
+        if i < 0 || i >= rows {
+            fail("row {i} is outside a {rows}×{columns} matrix")
+        }
+        values.slice(from: i * columns, to: i * columns + columns)
+    }
+
+    // Column j (from 0), as a list.
+    fn column(_ j: Int) -> [Float] {
+        if j < 0 || j >= columns {
+            fail("column {j} is outside a {rows}×{columns} matrix")
+        }
+        var c: [Float] = []
+        for i in 0..rows {
+            c.append(values[i * columns + j])
+        }
+        c
+    }
+
+    // The diagonal: the values at (0, 0), (1, 1) and on.
+    fn diagonalValues() -> [Float] {
+        var d: [Float] = []
+        for i in 0..min(rows, columns) {
+            d.append(values[i * columns + i])
+        }
+        d
+    }
+
+    // The rows, as a list of lists.
+    fn toRows() -> [[Float]] {
+        var list: [[Float]] = []
+        for i in 0..rows {
+            list.append(values.slice(from: i * columns, to: i * columns + columns))
+        }
+        list
+    }
+
+    // Whether it has as many rows as columns.
+    isSquare: Bool { rows == columns }
+
+    // The sum of the diagonal.
+    trace: Float {
+        var t = 0.0
+        for i in 0..min(rows, columns) {
+            t += values[i * columns + i]
+        }
+        t
+    }
+
+    // The square root of the sum of the squares of all the values.
+    frobeniusNorm: Float {
+        var s = 0.0
+        for x in values {
+            s += x * x
+        }
+        sqrt(s)
+    }
+
+    // The largest sum of absolute values in a column (the 1-norm).
+    norm1: Float {
+        var best = 0.0
+        for j in 0..columns {
+            var s = 0.0
+            for i in 0..rows {
+                s += abs(values[i * columns + j])
+            }
+            best = max(best, s)
+        }
+        best
+    }
+
+    // The largest sum of absolute values in a row (the infinity norm).
+    normInfinity: Float {
+        var best = 0.0
+        for i in 0..rows {
+            var s = 0.0
+            for j in 0..columns {
+                s += abs(values[i * columns + j])
+            }
+            best = max(best, s)
+        }
+        best
+    }
+
+    // The largest absolute value in it (0 for an empty matrix).
+    largest: Float {
+        var best = 0.0
+        for x in values {
+            best = max(best, abs(x))
+        }
+        best
+    }
+
+    // Rows turned into columns: the value at (i, j) moves to (j, i).
+    fn transposed() -> Matrix {
+        var v: [Float] = []
+        for j in 0..columns {
+            for i in 0..rows {
+                v.append(values[i * columns + j])
+            }
+        }
+        Matrix(rows: columns, columns: rows, values: v)
+    }
+
+    // This matrix plus b, which must be the same size.
+    fn plus(_ b: Matrix) -> Matrix {
+        sameSize(self, b, "add")
+        var v: [Float] = []
+        for k in 0..values.count {
+            v.append(values[k] + b.values[k])
+        }
+        Matrix(rows: rows, columns: columns, values: v)
+    }
+
+    // This matrix minus b, which must be the same size.
+    fn minus(_ b: Matrix) -> Matrix {
+        sameSize(self, b, "subtract")
+        var v: [Float] = []
+        for k in 0..values.count {
+            v.append(values[k] - b.values[k])
+        }
+        Matrix(rows: rows, columns: columns, values: v)
+    }
+
+    // Every value multiplied by `by`.
+    fn scaled(by: Float) -> Matrix {
+        Matrix(rows: rows, columns: columns, values: values.map { x in x * by })
+    }
+
+    // The matrix product: this matrix times b. b must have as many rows as
+    // this has columns; the product has this one's rows and b's columns.
+    fn times(_ b: Matrix) -> Matrix {
+        if columns != b.rows {
+            fail("can't multiply a {rows}×{columns} matrix by a {b.rows}×{b.columns} one: the first needs as many columns as the second has rows")
+        }
+        var v: [Float] = []
+        for _ in 0..rows * b.columns {
+            v.append(0.0)
+        }
+        for i in 0..rows {
+            for k in 0..columns {
+                let x = values[i * columns + k]
+                if x != 0.0 {
+                    for j in 0..b.columns {
+                        v[i * b.columns + j] += x * b.values[k * b.columns + j]
+                    }
+                }
+            }
+        }
+        Matrix(rows: rows, columns: b.columns, values: v)
+    }
+
+    // This matrix times the vector x, which must have one value per column.
+    fn timesVector(_ x: [Float]) -> [Float] {
+        if x.count != columns {
+            fail("can't multiply a {rows}×{columns} matrix by a vector of {x.count}: it needs {columns} values")
+        }
+        var y: [Float] = []
+        for i in 0..rows {
+            var s = 0.0
+            for j in 0..columns {
+                s += values[i * columns + j] * x[j]
+            }
+            y.append(s)
+        }
+        y
+    }
+
+    // Whether it's square and the same as its transpose, with values at
+    // (i, j) and (j, i) differing by no more than `tolerance` times the
+    // largest value.
+    fn isSymmetric(tolerance: Float = 1e-12) -> Bool {
+        if rows != columns {
+            return false
+        }
+        let limit = tolerance * largest
+        for i in 0..rows {
+            for j in i + 1..columns {
+                if abs(values[i * columns + j] - values[j * columns + i]) > limit {
+                    return false
+                }
+            }
+        }
+        true
+    }
+
+    // Whether b is the same size and every value is within `tolerance` of
+    // this one's.
+    fn isClose(to: Matrix, tolerance: Float = 1e-9) -> Bool {
+        if rows != to.rows || columns != to.columns {
+            return false
+        }
+        for k in 0..values.count {
+            if !(abs(values[k] - to.values[k]) <= tolerance) {
+                return false
+            }
+        }
+        true
+    }
+
+    // The rows as text, one line each, with `decimals` digits after the
+    // point and the columns lined up.
+    //
+    // Example:
+    //   print(linalg.Matrix.identity(2).describe(decimals: 1))
+    //   // [ 1.0  0.0 ]
+    //   // [ 0.0  1.0 ]
+    fn describe(decimals: Int = 4) -> String {
+        var texts: [String] = []
+        var width = 0
+        for x in values {
+            let t = numberText(x, decimals)
+            width = max(width, t.count)
+            texts.append(t)
+        }
+        var lines: [String] = []
+        for i in 0..rows {
+            var line = "["
+            for j in 0..columns {
+                let t = texts[i * columns + j]
+                line += " " + " ".repeated(width - t.count) + t
+                if j < columns - 1 {
+                    line += " "
+                }
+            }
+            lines.append(line + " ]")
+        }
+        lines.joined(separator: "\n")
+    }
+}
+
+// Stops the program with a message: for sizes that don't fit together,
+// which is a mistake in the code, not in the data.
+fn fail(_ message: String) {
+    printError("linalg: {message}")
+    exit(1)
+}
+
+// Stops the program unless a and b are the same size.
+fn sameSize(_ a: Matrix, _ b: Matrix, _ doing: String) {
+    if a.rows != b.rows || a.columns != b.columns {
+        fail("can't {doing} a {a.rows}×{a.columns} matrix and a {b.rows}×{b.columns} one: they must be the same size")
+    }
+}
+
+// Stops the program unless a is square.
+fn needSquare(_ a: Matrix, _ doing: String) {
+    if a.rows != a.columns {
+        fail("{doing} needs a square matrix, not a {a.rows}×{a.columns} one")
+    }
+}
+
+// x with `decimals` digits after the point, never "-0.00".
+fn numberText(_ x: Float, _ decimals: Int) -> String {
+    if !x.isFinite {
+        return "{x}"
+    }
+    let scale = pow(10.0, Float(decimals))
+    var r = round(x * scale) / scale
+    if r == 0.0 {
+        r = 0.0
+    }
+    r.formatted(decimals: decimals)
+}
+
+// The smallest difference between 1.0 and the next Float.
+let epsilon = 2.220446049250313e-16

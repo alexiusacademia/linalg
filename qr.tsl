@@ -1,0 +1,154 @@
+// linalg: QR factorization and least squares. When there are more
+// equations than unknowns (fitting a line or a curve to measurements), no x
+// makes A x = b exactly; least squares finds the x that makes the sum of
+// the squares of A x − b smallest. QR does it without forming AᵀA, which
+// would square the condition number and lose half the digits.
+//
+// Author: Alexius Academia
+// Date: 2026-10-24
+
+// A matrix A with at least as many rows as columns, factored as A = Q R by
+// Householder reflections. Made by `qr`.
+//
+// Fields:
+//   q: Q: m×n, its columns at right angles to each other and of length 1
+//      (Qᵀ Q is the identity).
+//   r: R: n×n, upper triangular.
+public struct QR {
+    q: Matrix
+    r: Matrix
+
+    // The x that makes the sum of the squares of A x − b smallest (the
+    // exact solution when A is square). b must have one value per row of A.
+    //
+    // Returns:
+    //   x, or a failure when A's columns aren't independent (its rank is
+    //   less than its number of columns), so that many x's fit equally
+    //   well. `svd(a).solve(b)` picks the shortest of them.
+    fn solve(_ b: [Float]) -> Result<[Float]> {
+        if b.count != q.rows {
+            fail("can't fit a {q.rows}×{q.columns} system to {b.count} values on the right: it needs {q.rows}")
+        }
+        let n = r.rows
+        var biggest = 0.0
+        for i in 0..n {
+            biggest = max(biggest, abs(r.values[i * n + i]))
+        }
+        let tiny = Float(max(q.rows, n)) * epsilon * biggest
+        for i in 0..n {
+            if !(abs(r.values[i * n + i]) > tiny) {
+                return Result.failure(error: Error("the columns aren't independent: column {i + 1} is a combination of the ones before it"))
+            }
+        }
+        var x = q.transposed().timesVector(b)
+        var i = n - 1
+        while i >= 0 {
+            var s = x[i]
+            for j in i + 1..n {
+                s -= r.values[i * n + j] * x[j]
+            }
+            x[i] = s / r.values[i * n + i]
+            i -= 1
+        }
+        Result.ok(value: x)
+    }
+}
+
+// Factors a, which must have at least as many rows as columns, as
+// A = Q R (see `QR`).
+//
+// Example:
+//   let f = linalg.qr(linalg.Matrix.fromRows([[3, 0], [4, 5]]))
+//   print(f.q.times(f.r).describe())   // a again
+public fn qr(_ a: Matrix) -> QR {
+    let m = a.rows
+    let n = a.columns
+    if m < n {
+        fail("a QR factorization needs at least as many rows as columns, not a {m}×{n} matrix")
+    }
+    var w = a.values
+    var reflectors: [[Float]] = []
+    for k in 0..n {
+        var v: [Float] = []
+        for i in k..m {
+            v.append(w[i * n + k])
+        }
+        let length = norm(v)
+        var alpha = length
+        if v[0] > 0.0 {
+            alpha = -length
+        }
+        v[0] -= alpha
+        var vv = 0.0
+        for x in v {
+            vv += x * x
+        }
+        if length == 0.0 || vv == 0.0 {
+            reflectors.append([])
+        } else {
+            for j in k..n {
+                var s = 0.0
+                for i in 0..v.count {
+                    s += v[i] * w[(k + i) * n + j]
+                }
+                let f = 2.0 * s / vv
+                for i in 0..v.count {
+                    w[(k + i) * n + j] -= f * v[i]
+                }
+            }
+            reflectors.append(v)
+        }
+    }
+    var r = Matrix.zeros(rows: n, columns: n)
+    for i in 0..n {
+        for j in i..n {
+            r.values[i * n + j] = w[i * n + j]
+        }
+    }
+    // Q is the reflections applied, last first, to the first n columns of
+    // the identity.
+    var q = Matrix.zeros(rows: m, columns: n)
+    for i in 0..n {
+        q.values[i * n + i] = 1.0
+    }
+    var k = n - 1
+    while k >= 0 {
+        let v = reflectors[k]
+        if v.count > 0 {
+            var vv = 0.0
+            for x in v {
+                vv += x * x
+            }
+            for j in 0..n {
+                var s = 0.0
+                for i in 0..v.count {
+                    s += v[i] * q.values[(k + i) * n + j]
+                }
+                let f = 2.0 * s / vv
+                for i in 0..v.count {
+                    q.values[(k + i) * n + j] -= f * v[i]
+                }
+            }
+        }
+        k -= 1
+    }
+    QR(q: q, r: r)
+}
+
+// The least-squares solution of a x = b: the x that makes the sum of the
+// squares of a x − b smallest. a must have at least as many rows as
+// columns.
+//
+// Returns:
+//   x, or a failure when a's columns aren't independent (see `QR.solve`).
+//
+// Example:
+//   // The line y = c0 + c1 t closest to (0, 1), (1, 3), (2, 5), (3, 7.5):
+//   let a = linalg.Matrix.fromRows([[1, 0], [1, 1], [1, 2], [1, 3]])
+//   print(try linalg.leastSquares(a, [1, 3, 5, 7.5]))   // [0.9, 2.15] (to rounding)
+public fn leastSquares(_ a: Matrix, _ b: [Float]) -> Result<[Float]> {
+    if b.count != a.rows {
+        fail("can't fit a {a.rows}×{a.columns} system to {b.count} values on the right: it needs {a.rows}")
+    }
+    qr(a).solve(b)
+}

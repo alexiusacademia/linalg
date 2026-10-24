@@ -1,0 +1,140 @@
+// linalg: eigenvalues and eigenvectors of symmetric matrices, by the
+// cyclic Jacobi method: plane rotations, each zeroing one value off the
+// diagonal, until all of them are negligible. It's slower than the QR
+// algorithm for big matrices but very accurate, and simple enough to trust,
+// which suits the small symmetric matrices of engineering: stress tensors,
+// inertia tensors, stiffness and mass matrices, covariances.
+//
+// Author: Alexius Academia
+// Date: 2026-10-24
+
+// The eigenvalues and eigenvectors of a symmetric matrix A: for each i,
+// A v = λ v with λ = `values[i]` and v = `vectors.column(i)`. Made by
+// `symmetricEigen`.
+//
+// Fields:
+//   values: The eigenvalues, smallest first.
+//   vectors: The eigenvectors, as columns in the same order, each of length
+//            1 and at right angles to the others. Each is signed so that
+//            its largest value (by size; the first of them, on a tie) is
+//            positive.
+//   sweeps: How many sweeps over the off-diagonal values it took.
+public struct Eigen {
+    values: [Float]
+    vectors: Matrix
+    sweeps: Int
+
+    // Eigenvector i (from 0), the one for `values[i]`.
+    fn vector(_ i: Int) -> [Float] {
+        vectors.column(i)
+    }
+}
+
+// The eigenvalues and eigenvectors of the symmetric matrix a (see `Eigen`).
+//
+// Parameters:
+//   a: A square, symmetric matrix.
+//   tolerance: When to stop: once the values off the diagonal, together,
+//              are below `tolerance` times the size of the whole matrix.
+//   maxSweeps: The most sweeps to make before giving up.
+//
+// Returns:
+//   The eigenvalues and eigenvectors, or a failure when a isn't symmetric
+//   (to 1e-12 of its largest value) or the sweeps run out.
+//
+// Example:
+//   // The principal stresses of a plane stress state (MPa):
+//   let e = try linalg.symmetricEigen(linalg.Matrix.fromRows([[50, 30], [30, -20]]))
+//   print(e.values)   // [-31.0977…, 61.0977…]: 15 ∓ √2125
+public fn symmetricEigen(_ a: Matrix, tolerance: Float = 1e-15, maxSweeps: Int = 100) -> Result<Eigen> {
+    needSquare(a, "symmetricEigen")
+    if !a.isSymmetric() {
+        return Result.failure(error: Error("the matrix isn't symmetric"))
+    }
+    let n = a.rows
+    // Starting from the symmetric part, so tiny asymmetries don't matter.
+    var w = a.values
+    for i in 0..n {
+        for j in i + 1..n {
+            let s = (w[i * n + j] + w[j * n + i]) / 2.0
+            w[i * n + j] = s
+            w[j * n + i] = s
+        }
+    }
+    var v = Matrix.identity(n).values
+    let limit = tolerance * a.frobeniusNorm
+    var sweeps = 0
+    var done = false
+    while !done {
+        var off = 0.0
+        for i in 0..n {
+            for j in i + 1..n {
+                off += 2.0 * w[i * n + j] * w[i * n + j]
+            }
+        }
+        if sqrt(off) <= limit {
+            done = true
+        } else if sweeps >= maxSweeps {
+            return Result.failure(error: Error("the eigenvalues didn't converge in {maxSweeps} sweeps"))
+        } else {
+            sweeps += 1
+            for p in 0..n {
+                for q in p + 1..n {
+                    let apq = w[p * n + q]
+                    if apq != 0.0 {
+                        let theta = (w[q * n + q] - w[p * n + p]) / (2.0 * apq)
+                        var t = 1.0 / (abs(theta) + sqrt(theta * theta + 1.0))
+                        if theta < 0.0 {
+                            t = -t
+                        }
+                        let c = 1.0 / sqrt(t * t + 1.0)
+                        let s = t * c
+                        for k in 0..n {
+                            let kp = w[k * n + p]
+                            let kq = w[k * n + q]
+                            w[k * n + p] = c * kp - s * kq
+                            w[k * n + q] = s * kp + c * kq
+                        }
+                        for k in 0..n {
+                            let pk = w[p * n + k]
+                            let qk = w[q * n + k]
+                            w[p * n + k] = c * pk - s * qk
+                            w[q * n + k] = s * pk + c * qk
+                        }
+                        for k in 0..n {
+                            let kp = v[k * n + p]
+                            let kq = v[k * n + q]
+                            v[k * n + p] = c * kp - s * kq
+                            v[k * n + q] = s * kp + c * kq
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Smallest first, each vector signed so its largest value is positive.
+    var order: [Int] = []
+    for i in 0..n {
+        order.append(i)
+    }
+    let order2 = order.sorted(by: { x, y in w[x * n + x] < w[y * n + y] })
+    var values: [Float] = []
+    var vectors = Matrix.zeros(rows: n, columns: n)
+    for (col, i) in order2.enumerated() {
+        values.append(w[i * n + i])
+        var big = 0.0
+        for k in 0..n {
+            if abs(v[k * n + i]) > abs(big) {
+                big = v[k * n + i]
+            }
+        }
+        var sign = 1.0
+        if big < 0.0 {
+            sign = -1.0
+        }
+        for k in 0..n {
+            vectors.values[k * n + col] = sign * v[k * n + i]
+        }
+    }
+    Result.ok(value: Eigen(values: values, vectors: vectors, sweeps: sweeps))
+}

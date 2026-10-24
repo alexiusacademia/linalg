@@ -1,0 +1,421 @@
+// linalg: solving square systems A x = b. `solve`, `inverse` and
+// `determinant` for one-off answers; `lu` and `cholesky` to factor A once
+// and then solve for many right-hand sides cheaply; `solveTridiagonal` for
+// the banded systems that splines and finite differences make.
+//
+// A matrix whose values leave no answer (singular, or not positive definite
+// for `cholesky`) gives a failure that says why, never a list of NaNs.
+//
+// Author: Alexius Academia
+// Date: 2026-10-24
+
+// A square matrix A factored as P A = L U, by Gaussian elimination with
+// partial pivoting: L lower triangular with ones on its diagonal, U upper
+// triangular, P a reordering of the rows. Made by `lu`.
+//
+// Fields:
+//   factors: L and U in one matrix: U on and above the diagonal, L below it
+//            (L's diagonal of ones isn't stored).
+//   pivots: The reordering: row i of P A is row `pivots[i]` of A.
+//   swaps: How many row swaps it took (its parity is the sign of P's
+//          determinant).
+//
+// Example:
+//   let f = try linalg.lu(linalg.Matrix.fromRows([[2, 1], [1, 3]]))
+//   print(f.solve([3, 5]))     // [0.8, 1.4]
+//   print(f.determinant)       // 5.0
+public struct LU {
+    factors: Matrix
+    pivots: [Int]
+    swaps: Int
+
+    // The size of A.
+    size: Int { factors.rows }
+
+    // The determinant of A.
+    determinant: Float {
+        var d = 1.0
+        if swaps % 2 == 1 {
+            d = -1.0
+        }
+        for i in 0..size {
+            d *= factors.values[i * size + i]
+        }
+        d
+    }
+
+    // L: ones on the diagonal, the multipliers below it.
+    lower: Matrix {
+        let n = size
+        var m = Matrix.identity(n)
+        for i in 0..n {
+            for j in 0..i {
+                m.values[i * n + j] = factors.values[i * n + j]
+            }
+        }
+        m
+    }
+
+    // U: the upper triangle of `factors`.
+    upper: Matrix {
+        let n = size
+        var m = Matrix.zeros(rows: n, columns: n)
+        for i in 0..n {
+            for j in i..n {
+                m.values[i * n + j] = factors.values[i * n + j]
+            }
+        }
+        m
+    }
+
+    // P: the identity with its rows reordered, so that P A = L U.
+    permutation: Matrix {
+        let n = size
+        var m = Matrix.zeros(rows: n, columns: n)
+        for i in 0..n {
+            m.values[i * n + pivots[i]] = 1.0
+        }
+        m
+    }
+
+    // The x where A x = b. b must have one value per row of A.
+    fn solve(_ b: [Float]) -> [Float] {
+        let n = size
+        if b.count != n {
+            fail("can't solve a {n}×{n} system with {b.count} values on the right: it needs {n}")
+        }
+        let v = factors.values
+        var x: [Float] = []
+        for i in 0..n {
+            var s = b[pivots[i]]
+            for j in 0..i {
+                s -= v[i * n + j] * x[j]
+            }
+            x.append(s)
+        }
+        var i = n - 1
+        while i >= 0 {
+            var s = x[i]
+            for j in i + 1..n {
+                s -= v[i * n + j] * x[j]
+            }
+            x[i] = s / v[i * n + i]
+            i -= 1
+        }
+        x
+    }
+
+    // The X where A X = B, one column of B at a time. B must have as many
+    // rows as A.
+    fn solveMatrix(_ b: Matrix) -> Matrix {
+        if b.rows != size {
+            fail("can't solve a {size}×{size} system with a {b.rows}×{b.columns} right-hand side: it needs {size} rows")
+        }
+        var columns: [[Float]] = []
+        for j in 0..b.columns {
+            columns.append(solve(b.column(j)))
+        }
+        Matrix.fromColumns(columns)
+    }
+
+    // The inverse of A.
+    fn inverse() -> Matrix {
+        solveMatrix(Matrix.identity(size))
+    }
+}
+
+// Factors the square matrix a as P A = L U (see `LU`), to solve with it
+// many times, or read its determinant.
+//
+// Returns:
+//   The factors, or a failure when a is singular: when, after the rows
+//   before it are taken out, a column has nothing larger than rounding
+//   error (n × 2.2e-16 times a's largest value) left to pivot on.
+//
+// Example:
+//   match linalg.lu(linalg.Matrix.fromRows([[1, 2], [2, 4]])) {
+//       .ok(f) -> print(f.solve([1, 2]))
+//       .failure(e) -> print(e.message)   // the matrix is singular: ...
+//   }
+public fn lu(_ a: Matrix) -> Result<LU> {
+    needSquare(a, "an LU factorization")
+    let n = a.rows
+    var m = a.values
+    var pivots: [Int] = []
+    for i in 0..n {
+        pivots.append(i)
+    }
+    var swaps = 0
+    let tiny = Float(n) * epsilon * a.largest
+    for k in 0..n {
+        var p = k
+        var best = abs(m[k * n + k])
+        for i in k + 1..n {
+            let x = abs(m[i * n + k])
+            if x > best {
+                best = x
+                p = i
+            }
+        }
+        if !(best > tiny) {
+            return Result.failure(error: Error("the matrix is singular: column {k + 1} has no pivot left after the columns before it are eliminated"))
+        }
+        if p != k {
+            for j in 0..n {
+                let t = m[k * n + j]
+                m[k * n + j] = m[p * n + j]
+                m[p * n + j] = t
+            }
+            let t = pivots[k]
+            pivots[k] = pivots[p]
+            pivots[p] = t
+            swaps += 1
+        }
+        let d = m[k * n + k]
+        for i in k + 1..n {
+            let f = m[i * n + k] / d
+            m[i * n + k] = f
+            if f != 0.0 {
+                for j in k + 1..n {
+                    m[i * n + j] -= f * m[k * n + j]
+                }
+            }
+        }
+    }
+    Result.ok(value: LU(factors: Matrix(rows: n, columns: n, values: m), pivots: pivots, swaps: swaps))
+}
+
+// The x where a x = b, for a square a.
+//
+// Returns:
+//   x, or a failure when a is singular (see `lu`).
+//
+// Example:
+//   let a = linalg.Matrix.fromRows([[2, 1, -1], [-3, -1, 2], [-2, 1, 2]])
+//   print(try linalg.solve(a, [8, -11, -3]))   // [2.0, 3.0, -1.0] (to rounding)
+public fn solve(_ a: Matrix, _ b: [Float]) -> Result<[Float]> {
+    needSquare(a, "solve")
+    if b.count != a.rows {
+        fail("can't solve a {a.rows}×{a.columns} system with {b.count} values on the right: it needs {a.rows}")
+    }
+    let f = try lu(a)
+    Result.ok(value: f.solve(b))
+}
+
+// The inverse of the square matrix a: the matrix that a times gives the
+// identity. To solve a x = b, `solve` is faster and more accurate than
+// multiplying by the inverse.
+//
+// Returns:
+//   The inverse, or a failure when a is singular (see `lu`).
+public fn inverse(_ a: Matrix) -> Result<Matrix> {
+    needSquare(a, "an inverse")
+    let f = try lu(a)
+    Result.ok(value: f.inverse())
+}
+
+// The determinant of the square matrix a (0 when it's singular), by
+// elimination with partial pivoting.
+//
+// Example:
+//   print(linalg.determinant(linalg.Matrix.fromRows([[1, 2], [3, 4]])))   // -2.0
+public fn determinant(_ a: Matrix) -> Float {
+    needSquare(a, "a determinant")
+    let n = a.rows
+    var m = a.values
+    var d = 1.0
+    for k in 0..n {
+        var p = k
+        var best = abs(m[k * n + k])
+        for i in k + 1..n {
+            let x = abs(m[i * n + k])
+            if x > best {
+                best = x
+                p = i
+            }
+        }
+        if best == 0.0 {
+            return 0.0
+        }
+        if p != k {
+            for j in 0..n {
+                let t = m[k * n + j]
+                m[k * n + j] = m[p * n + j]
+                m[p * n + j] = t
+            }
+            d = -d
+        }
+        let pivot = m[k * n + k]
+        d *= pivot
+        for i in k + 1..n {
+            let f = m[i * n + k] / pivot
+            if f != 0.0 {
+                for j in k + 1..n {
+                    m[i * n + j] -= f * m[k * n + j]
+                }
+            }
+        }
+    }
+    d
+}
+
+// A symmetric positive definite matrix A factored as A = L Lᵀ, with L lower
+// triangular. Made by `cholesky`. It's half the work of `lu`, and is what
+// stiffness matrices, normal equations and covariance matrices call for.
+//
+// Fields:
+//   lower: L.
+public struct Cholesky {
+    lower: Matrix
+
+    // The size of A.
+    size: Int { lower.rows }
+
+    // The determinant of A: the square of the product of L's diagonal.
+    determinant: Float {
+        var d = 1.0
+        for i in 0..size {
+            d *= lower.values[i * size + i]
+        }
+        d * d
+    }
+
+    // The x where A x = b. b must have one value per row of A.
+    fn solve(_ b: [Float]) -> [Float] {
+        let n = size
+        if b.count != n {
+            fail("can't solve a {n}×{n} system with {b.count} values on the right: it needs {n}")
+        }
+        let l = lower.values
+        var y: [Float] = []
+        for i in 0..n {
+            var s = b[i]
+            for k in 0..i {
+                s -= l[i * n + k] * y[k]
+            }
+            y.append(s / l[i * n + i])
+        }
+        var i = n - 1
+        while i >= 0 {
+            var s = y[i]
+            for k in i + 1..n {
+                s -= l[k * n + i] * y[k]
+            }
+            y[i] = s / l[i * n + i]
+            i -= 1
+        }
+        y
+    }
+
+    // The inverse of A.
+    fn inverse() -> Matrix {
+        var columns: [[Float]] = []
+        let id = Matrix.identity(size)
+        for j in 0..size {
+            columns.append(solve(id.column(j)))
+        }
+        Matrix.fromColumns(columns)
+    }
+}
+
+// Factors a symmetric positive definite matrix as A = L Lᵀ (see
+// `Cholesky`).
+//
+// Returns:
+//   The factor, or a failure when a isn't symmetric (to 1e-12 of its
+//   largest value) or isn't positive definite.
+//
+// Example:
+//   let f = try linalg.cholesky(linalg.Matrix.fromRows([[4, 2], [2, 3]]))
+//   print(f.lower.describe())   // [ 2.0000  0.0000 ]
+//                               // [ 1.0000  1.4142 ]
+public fn cholesky(_ a: Matrix) -> Result<Cholesky> {
+    needSquare(a, "a Cholesky factorization")
+    if !a.isSymmetric() {
+        return Result.failure(error: Error("the matrix isn't symmetric"))
+    }
+    let n = a.rows
+    let v = a.values
+    var l: [Float] = []
+    for _ in 0..n * n {
+        l.append(0.0)
+    }
+    for j in 0..n {
+        var s = v[j * n + j]
+        for k in 0..j {
+            s -= l[j * n + k] * l[j * n + k]
+        }
+        if !(s > 0.0) {
+            return Result.failure(error: Error("the matrix isn't positive definite: pivot {j + 1} is {s}"))
+        }
+        let d = sqrt(s)
+        l[j * n + j] = d
+        for i in j + 1..n {
+            var t = v[i * n + j]
+            for k in 0..j {
+                t -= l[i * n + k] * l[j * n + k]
+            }
+            l[i * n + j] = t / d
+        }
+    }
+    Result.ok(value: Cholesky(lower: Matrix(rows: n, columns: n, values: l)))
+}
+
+// The x where A x = b for a tridiagonal A: one with values only on its
+// diagonal and the diagonals just above and below. It takes time in
+// proportion to n, not n³, by the Thomas algorithm.
+//
+// Parameters:
+//   below: The diagonal under the main one: n − 1 values, A's (1, 0),
+//          (2, 1) and on.
+//   diagonal: The main diagonal: n values.
+//   above: The diagonal over the main one: n − 1 values, A's (0, 1),
+//          (1, 2) and on.
+//   b: The right-hand side: n values.
+//
+// Returns:
+//   x, or a failure when elimination meets a zero pivot. It doesn't swap
+//   rows, so it's meant for diagonally dominant systems (each diagonal
+//   value at least as large as the others in its row), which is what
+//   splines and finite differences give; for others, use `solve`.
+//
+// Example:
+//   let x = try linalg.solveTridiagonal(below: [-1, -1], diagonal: [2, 2, 2], above: [-1, -1], [1, 0, 1])
+//   print(x)   // [1.0, 1.0, 1.0] (to rounding)
+public fn solveTridiagonal(below: [Float], diagonal: [Float], above: [Float], _ b: [Float]) -> Result<[Float]> {
+    let n = diagonal.count
+    if b.count != n || (n > 0 && (below.count != n - 1 || above.count != n - 1)) {
+        fail("a tridiagonal system of {n} needs {n} values on the right and {n - 1} below and above the diagonal, not {b.count}, {below.count} and {above.count}")
+    }
+    if n == 0 {
+        return Result.ok(value: [])
+    }
+    var c: [Float] = []
+    var d: [Float] = []
+    var pivot = diagonal[0]
+    if pivot == 0.0 {
+        return Result.failure(error: Error("the system meets a zero pivot in row 1"))
+    }
+    for i in 0..n {
+        if i > 0 {
+            pivot = diagonal[i] - below[i - 1] * c[i - 1]
+            if pivot == 0.0 {
+                return Result.failure(error: Error("the system meets a zero pivot in row {i + 1}"))
+            }
+        }
+        if i < n - 1 {
+            c.append(above[i] / pivot)
+        }
+        if i == 0 {
+            d.append(b[0] / pivot)
+        } else {
+            d.append((b[i] - below[i - 1] * d[i - 1]) / pivot)
+        }
+    }
+    var i = n - 2
+    while i >= 0 {
+        d[i] -= c[i] * d[i + 1]
+        i -= 1
+    }
+    Result.ok(value: d)
+}

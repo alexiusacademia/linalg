@@ -1,0 +1,105 @@
+// linalg: vectors. A vector is a plain `[Float]`; these are the
+// operations on them. Vectors of different lengths stop the program with a
+// message, as matrices of sizes that don't fit do.
+//
+// Author: Alexius Academia
+// Date: 2026-10-24
+
+// Stops the program unless a and b have the same length.
+fn sameLength(_ a: [Float], _ b: [Float], _ doing: String) {
+    if a.count != b.count {
+        fail("can't {doing} vectors of {a.count} and {b.count} values: they must be the same length")
+    }
+}
+
+// The dot product: the sum of a[i] × b[i].
+//
+// Example:
+//   print(linalg.dot([1, 2, 3], [4, 5, 6]))   // 32.0
+public fn dot(_ a: [Float], _ b: [Float]) -> Float {
+    sameLength(a, b, "take the dot product of")
+    var s = 0.0
+    for i in 0..a.count {
+        s += a[i] * b[i]
+    }
+    s
+}
+
+// The length of a: the square root of the sum of its squares.
+//
+// Example:
+//   print(linalg.norm([3, 4]))   // 5.0
+public fn norm(_ a: [Float]) -> Float {
+    // Scaled by the largest value first, so that very large or very small
+    // values don't overflow or underflow when squared.
+    var big = 0.0
+    for x in a {
+        big = max(big, abs(x))
+    }
+    if big == 0.0 || !big.isFinite {
+        return big
+    }
+    var s = 0.0
+    for x in a {
+        let r = x / big
+        s += r * r
+    }
+    big * sqrt(s)
+}
+
+// a + b, value by value.
+public fn add(_ a: [Float], _ b: [Float]) -> [Float] {
+    sameLength(a, b, "add")
+    var c: [Float] = []
+    for i in 0..a.count {
+        c.append(a[i] + b[i])
+    }
+    c
+}
+
+// a − b, value by value.
+public fn subtract(_ a: [Float], _ b: [Float]) -> [Float] {
+    sameLength(a, b, "subtract")
+    var c: [Float] = []
+    for i in 0..a.count {
+        c.append(a[i] - b[i])
+    }
+    c
+}
+
+// Every value of a multiplied by `by`.
+public fn scale(_ a: [Float], by: Float) -> [Float] {
+    a.map { x in x * by }
+}
+
+// a scaled to length 1 (a itself when it's all zeros).
+public fn normalized(_ a: [Float]) -> [Float] {
+    let n = norm(a)
+    if n == 0.0 {
+        return a
+    }
+    a.map { x in x / n }
+}
+
+// The cross product of two vectors of 3 values: a vector at right angles
+// to both, as long as the area of the parallelogram they make.
+//
+// Example:
+//   print(linalg.cross([1, 0, 0], [0, 1, 0]))   // [0.0, 0.0, 1.0]
+public fn cross(_ a: [Float], _ b: [Float]) -> [Float] {
+    if a.count != 3 || b.count != 3 {
+        fail("the cross product needs two vectors of 3 values, not {a.count} and {b.count}")
+    }
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+// The outer product: the matrix whose value at (i, j) is a[i] × b[j].
+public fn outer(_ a: [Float], _ b: [Float]) -> Matrix {
+    var v: [Float] = []
+    for x in a {
+        for y in b {
+            v.append(x * y)
+        }
+    }
+    Matrix(rows: a.count, columns: b.count, values: v)
+}

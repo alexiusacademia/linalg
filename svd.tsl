@@ -1,0 +1,214 @@
+// linalg: the singular value decomposition, A = U Σ Vᵀ, by one-sided
+// Jacobi rotations. It's the most reliable way to learn what a matrix does:
+// its rank, how close it is to singular (the condition number), and the
+// shortest least-squares answer even when the columns aren't independent
+// (the pseudo-inverse).
+//
+// Author: Alexius Academia
+// Date: 2026-10-24
+
+// A matrix A (m×n) factored as A = U Σ Vᵀ, with k = min(m, n) singular
+// values. Made by `svd`.
+//
+// Fields:
+//   u: U: m×k, its columns at right angles to each other and of length 1
+//      (a column is all zeros where its singular value is 0).
+//   values: Σ's diagonal, the singular values: k values, largest first,
+//           none negative.
+//   v: V: n×k, its columns at right angles to each other and of length 1.
+//   sweeps: How many sweeps of rotations it took.
+public struct SVD {
+    u: Matrix
+    values: [Float]
+    v: Matrix
+    sweeps: Int
+
+    // The singular values below this count as zero: the largest singular
+    // value times max(m, n) times 2.2e-16 (what rounding alone can make).
+    cutoff: Float {
+        var big = 0.0
+        if values.count > 0 {
+            big = values[0]
+        }
+        big * Float(max(u.rows, v.rows)) * epsilon
+    }
+
+    // How many singular values aren't zero (above `cutoff`): the number of
+    // independent rows, and of independent columns.
+    rank: Int {
+        let limit = cutoff
+        values.count(where: { s in s > limit })
+    }
+
+    // The largest singular value over the smallest: how much a relative
+    // error in b can grow in the x of A x = b. About 10^k means losing k
+    // digits. Infinite when the smallest singular value is 0. For a matrix
+    // that isn't square, it's the ratio of its min(m, n) singular values.
+    conditionNumber: Float {
+        if values.count == 0 {
+            return 0.0
+        }
+        let smallest = values[values.count - 1]
+        if smallest == 0.0 {
+            return 1.0 / 0.0
+        }
+        values[0] / smallest
+    }
+
+    // The pseudo-inverse A⁺ = V Σ⁺ Uᵀ (n×m), with Σ⁺ inverting the singular
+    // values above `cutoff` and keeping the others zero. It's the inverse
+    // when A is square and not singular.
+    fn pseudoInverse() -> Matrix {
+        let m = u.rows
+        let n = v.rows
+        let k = values.count
+        let limit = cutoff
+        var p = Matrix.zeros(rows: n, columns: m)
+        for t in 0..k {
+            let s = values[t]
+            if s > limit {
+                for i in 0..n {
+                    let f = v.values[i * k + t] / s
+                    if f != 0.0 {
+                        for j in 0..m {
+                            p.values[i * m + j] += f * u.values[j * k + t]
+                        }
+                    }
+                }
+            }
+        }
+        p
+    }
+
+    // The shortest x that makes the sum of the squares of A x − b smallest:
+    // A⁺ b. Unlike `leastSquares`, it has an answer when the columns aren't
+    // independent. b must have one value per row of A.
+    fn solve(_ b: [Float]) -> [Float] {
+        if b.count != u.rows {
+            fail("can't solve a {u.rows}×{v.rows} system with {b.count} values on the right: it needs {u.rows}")
+        }
+        pseudoInverse().timesVector(b)
+    }
+}
+
+// The singular value decomposition of a (see `SVD`).
+//
+// Parameters:
+//   a: Any matrix.
+//   maxSweeps: The most sweeps of rotations to make. It converges in well
+//              under 20 for matrices of a few hundred.
+//
+// Example:
+//   let s = linalg.svd(linalg.Matrix.fromRows([[3, 0], [0, -2], [0, 0]]))
+//   print(s.values)   // [3.0, 2.0]
+//   print(s.rank)     // 2
+public fn svd(_ a: Matrix, maxSweeps: Int = 60) -> SVD {
+    if a.rows < a.columns {
+        // A = (Aᵀ)ᵀ = (U Σ Vᵀ)ᵀ = V Σ Uᵀ.
+        let t = jacobiSVD(a.transposed(), maxSweeps)
+        return SVD(u: t.v, values: t.values, v: t.u, sweeps: t.sweeps)
+    }
+    jacobiSVD(a, maxSweeps)
+}
+
+// The SVD of a with at least as many rows as columns: rotating pairs of
+// columns of A until they're all at right angles to each other. Then the
+// columns' lengths are the singular values, the columns scaled to length 1
+// are U, and the rotations together are V.
+fn jacobiSVD(_ a: Matrix, _ maxSweeps: Int) -> SVD {
+    let m = a.rows
+    let n = a.columns
+    var w = a.values
+    var v = Matrix.identity(n).values
+    var sweeps = 0
+    var rotated = true
+    while rotated && sweeps < maxSweeps {
+        rotated = false
+        sweeps += 1
+        for p in 0..n {
+            for q in p + 1..n {
+                var alpha = 0.0
+                var beta = 0.0
+                var gamma = 0.0
+                for i in 0..m {
+                    let x = w[i * n + p]
+                    let y = w[i * n + q]
+                    alpha += x * x
+                    beta += y * y
+                    gamma += x * y
+                }
+                if gamma != 0.0 && abs(gamma) > epsilon * sqrt(alpha * beta) {
+                    rotated = true
+                    let zeta = (beta - alpha) / (2.0 * gamma)
+                    var t = 1.0 / (abs(zeta) + sqrt(1.0 + zeta * zeta))
+                    if zeta < 0.0 {
+                        t = -t
+                    }
+                    let c = 1.0 / sqrt(1.0 + t * t)
+                    let s = c * t
+                    for i in 0..m {
+                        let x = w[i * n + p]
+                        let y = w[i * n + q]
+                        w[i * n + p] = c * x - s * y
+                        w[i * n + q] = s * x + c * y
+                    }
+                    for i in 0..n {
+                        let x = v[i * n + p]
+                        let y = v[i * n + q]
+                        v[i * n + p] = c * x - s * y
+                        v[i * n + q] = s * x + c * y
+                    }
+                }
+            }
+        }
+    }
+    var lengths: [Float] = []
+    for j in 0..n {
+        var s = 0.0
+        for i in 0..m {
+            s += w[i * n + j] * w[i * n + j]
+        }
+        lengths.append(sqrt(s))
+    }
+    var order: [Int] = []
+    for j in 0..n {
+        order.append(j)
+    }
+    let sorted = order.sorted(by: { x, y in lengths[x] > lengths[y] })
+    var u = Matrix.zeros(rows: m, columns: n)
+    var vv = Matrix.zeros(rows: n, columns: n)
+    var values: [Float] = []
+    for (col, j) in sorted.enumerated() {
+        let s = lengths[j]
+        values.append(s)
+        if s > 0.0 {
+            for i in 0..m {
+                u.values[i * n + col] = w[i * n + j] / s
+            }
+        }
+        for i in 0..n {
+            vv.values[i * n + col] = v[i * n + j]
+        }
+    }
+    SVD(u: u, values: values, v: vv, sweeps: sweeps)
+}
+
+// The rank of a: how many of its rows (or columns) are independent, from
+// its singular values (see `SVD.rank`).
+//
+// Example:
+//   print(linalg.rank(linalg.Matrix.fromRows([[1, 2], [2, 4]])))   // 1
+public fn rank(_ a: Matrix) -> Int {
+    svd(a).rank
+}
+
+// The condition number of a in the 2-norm: its largest singular value over
+// its smallest (see `SVD.conditionNumber`). Infinite for a singular matrix.
+public fn conditionNumber(_ a: Matrix) -> Float {
+    svd(a).conditionNumber
+}
+
+// The pseudo-inverse of a (see `SVD.pseudoInverse`).
+public fn pseudoInverse(_ a: Matrix) -> Matrix {
+    svd(a).pseudoInverse()
+}

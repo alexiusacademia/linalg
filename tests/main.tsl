@@ -1,0 +1,350 @@
+// linalg's tests: every operation against answers known exactly, the
+// factorizations put back together, and every example in the
+// documentation. `tessel run tests` prints a line per check and exits with
+// 1 if any failed.
+//
+// Author: Alexius Academia
+// Date: 2026-10-24
+
+import ".."
+
+// Checks that `got` is within `within` of `expected`: 1 if it isn't.
+fn near(_ name: String, _ got: Float, _ expected: Float, within: Float = 1e-12) -> Int {
+    if abs(got - expected) <= within {
+        print("ok    {name}: {got}")
+        return 0
+    }
+    print("FAIL  {name}: {got}, expected {expected}")
+    1
+}
+
+// Checks that every value of `got` is within `within` of `expected`.
+fn nearAll(_ name: String, _ got: [Float], _ expected: [Float], within: Float = 1e-12) -> Int {
+    var ok = got.count == expected.count
+    if ok {
+        for i in 0..got.count {
+            if !(abs(got[i] - expected[i]) <= within) {
+                ok = false
+            }
+        }
+    }
+    if ok {
+        print("ok    {name}: {got}")
+        return 0
+    }
+    print("FAIL  {name}: {got}, expected {expected}")
+    1
+}
+
+// Checks that two matrices are the same size and within `within`.
+fn close(_ name: String, _ got: linalg.Matrix, _ expected: linalg.Matrix, within: Float = 1e-12) -> Int {
+    if got.isClose(to: expected, tolerance: within) {
+        print("ok    {name}")
+        return 0
+    }
+    print("FAIL  {name}: got\n{got.describe(decimals: 12)}\nexpected\n{expected.describe(decimals: 12)}")
+    1
+}
+
+// Checks that `got` is true: 1 if it isn't.
+fn holds(_ name: String, _ got: Bool) -> Int {
+    if got {
+        print("ok    {name}")
+        return 0
+    }
+    print("FAIL  {name}")
+    1
+}
+
+// Checks that `got` is a failure whose message has `part` in it.
+fn fails<T>(_ name: String, _ got: Result<T>, _ part: String) -> Int {
+    if let e = got.error() {
+        if e.message.contains(part) {
+            print("ok    {name}: {e.message}")
+            return 0
+        }
+        print("FAIL  {name}: failed with \"{e.message}\", expected it to mention \"{part}\"")
+        return 1
+    }
+    print("FAIL  {name}: it worked, expected a failure")
+    1
+}
+
+// Numbers that look random, the same every run: a linear congruential
+// generator's values, in -1...1.
+struct Numbers {
+    seed: Int = 12345
+
+    fn next() -> Float {
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        Float(seed) / 1073741824.0 - 1.0
+    }
+}
+
+// A rows×columns matrix of numbers from `numbers`.
+fn randomMatrix(_ numbers: Numbers, _ rows: Int, _ columns: Int) -> (linalg.Matrix, Numbers) {
+    var g = numbers
+    var v: [Float] = []
+    for _ in 0..rows * columns {
+        v.append(g.next())
+    }
+    (linalg.Matrix(rows: rows, columns: columns, values: v), g)
+}
+
+// The n×n Hilbert matrix, 1 / (i + j + 1): the classic badly conditioned
+// test.
+fn hilbert(_ n: Int) -> linalg.Matrix {
+    var m = linalg.Matrix.zeros(rows: n, columns: n)
+    for i in 0..n {
+        for j in 0..n {
+            m.set(i, j, 1.0 / Float(i + j + 1))
+        }
+    }
+    m
+}
+
+// The matrix and vector checks: how many failed.
+fn basics() -> Result<Int> {
+    var failed = 0
+    let a = linalg.Matrix.fromRows([[1, 2], [3, 4]])
+    failed += holds("fromRows: sizes", a.rows == 2 && a.columns == 2 && a.isSquare)
+    failed += near("at", a.at(1, 0), 3.0)
+    failed += close("times", a.times(a), linalg.Matrix.fromRows([[7, 10], [15, 22]]))
+    failed += close("times, 2×3 by 3×1", linalg.Matrix.fromRows([[1, 2, 3], [4, 5, 6]]).times(linalg.Matrix.fromColumns([[1, 0, -1]])), linalg.Matrix.fromRows([[-2], [-2]]))
+    failed += nearAll("timesVector", a.timesVector([1, 1]), [3, 7])
+    failed += close("transposed", linalg.Matrix.fromRows([[1, 2, 3]]).transposed(), linalg.Matrix.fromRows([[1], [2], [3]]))
+    failed += close("plus", a.plus(linalg.Matrix.identity(2)), linalg.Matrix.fromRows([[2, 2], [3, 5]]))
+    failed += close("minus", a.minus(a), linalg.Matrix.zeros(rows: 2, columns: 2))
+    failed += close("scaled", a.scaled(by: 2), linalg.Matrix.fromRows([[2, 4], [6, 8]]))
+    failed += close("diagonal", linalg.Matrix.diagonal([1, 2]), linalg.Matrix.fromRows([[1, 0], [0, 2]]))
+    failed += close("fromColumns", linalg.Matrix.fromColumns([[1, 3], [2, 4]]), a)
+    failed += nearAll("row", a.row(1), [3, 4])
+    failed += nearAll("column", a.column(1), [2, 4])
+    failed += nearAll("diagonalValues", a.diagonalValues(), [1, 4])
+    failed += holds("toRows", a.toRows() == [[1.0, 2.0], [3.0, 4.0]])
+    failed += near("trace", a.trace, 5.0)
+    failed += near("frobeniusNorm", a.frobeniusNorm, sqrt(30.0))
+    failed += near("norm1", a.norm1, 6.0)
+    failed += near("normInfinity", a.normInfinity, 7.0)
+    failed += near("largest", linalg.Matrix.fromRows([[1, -9], [3, 4]]).largest, 9.0)
+    failed += holds("isSymmetric", linalg.Matrix.fromRows([[1, 2], [2, 1]]).isSymmetric() && !a.isSymmetric())
+    var b = a
+    b.set(0, 1, 5.0)
+    failed += holds("set changes a copy only", b.at(0, 1) == 5.0 && a.at(0, 1) == 2.0)
+    failed += holds("describe", a.describe(decimals: 1) == "[ 1.0  2.0 ]\n[ 3.0  4.0 ]")
+    failed += holds("describe lines up, without -0", linalg.Matrix.fromRows([[-0.00001, 10], [1.5, -2]]).describe(decimals: 2) == "[  0.00  10.00 ]\n[  1.50  -2.00 ]")
+
+    failed += near("dot", linalg.dot([1, 2, 3], [4, 5, 6]), 32.0)
+    failed += near("norm", linalg.norm([3, 4]), 5.0)
+    failed += near("norm of huge values doesn't overflow", linalg.norm([3e200, 4e200]) / 1e200, 5.0, within: 1e-12)
+    failed += near("norm of tiny values doesn't underflow", linalg.norm([3e-200, 4e-200]) / 1e-200, 5.0, within: 1e-12)
+    failed += nearAll("add", linalg.add([1, 2], [3, 4]), [4, 6])
+    failed += nearAll("subtract", linalg.subtract([1, 2], [3, 4]), [-2, -2])
+    failed += nearAll("scale", linalg.scale([1, 2], by: 3), [3, 6])
+    failed += nearAll("normalized", linalg.normalized([3, 4]), [0.6, 0.8])
+    failed += nearAll("normalized zeros", linalg.normalized([0, 0]), [0, 0])
+    failed += nearAll("cross", linalg.cross([1, 0, 0], [0, 1, 0]), [0, 0, 1])
+    failed += nearAll("cross", linalg.cross([1, 2, 3], [4, 5, 6]), [-3, 6, -3])
+    failed += close("outer", linalg.outer([1, 2], [3, 4, 5]), linalg.Matrix.fromRows([[3, 4, 5], [6, 8, 10]]))
+    Result.ok(value: failed)
+}
+
+// The LU, Cholesky and tridiagonal checks.
+fn solving() -> Result<Int> {
+    var failed = 0
+    let a = linalg.Matrix.fromRows([[2, 1, -1], [-3, -1, 2], [-2, 1, 2]])
+    failed += nearAll("solve: the classic 3×3", linalg.solve(a, [8, -11, -3]).valueOr([]), [2, 3, -1])
+    failed += nearAll("solve needs a row swap", linalg.solve(linalg.Matrix.fromRows([[0, 1], [1, 0]]), [2, 3]).valueOr([]), [3, 2])
+    failed += fails("solve: singular", linalg.solve(linalg.Matrix.fromRows([[1, 2], [2, 4]]), [1, 2]), "singular")
+    failed += fails("solve: singular 3×3 by rounding", linalg.solve(linalg.Matrix.fromRows([[1, 2, 3], [4, 5, 6], [7, 8, 9]]), [1, 2, 3]), "column 3")
+    failed += fails("solve: zeros", linalg.solve(linalg.Matrix.zeros(rows: 2, columns: 2), [1, 2]), "singular")
+    failed += holds("solve: the empty system", linalg.solve(linalg.Matrix.zeros(rows: 0, columns: 0), []).valueOr([1.0]).count == 0)
+
+    let f = try linalg.lu(a)
+    failed += close("lu: P A = L U", f.permutation.times(a), f.lower.times(f.upper), within: 1e-14)
+    failed += near("lu: determinant", f.determinant, -1.0)
+    failed += close("lu: solveMatrix", f.solveMatrix(linalg.Matrix.fromColumns([[8, -11, -3], [16, -22, -6]])), linalg.Matrix.fromColumns([[2, 3, -1], [4, 6, -2]]), within: 1e-12)
+    failed += close("inverse", (try linalg.inverse(linalg.Matrix.fromRows([[4, 7], [2, 6]]))), linalg.Matrix.fromRows([[0.6, -0.7], [-0.2, 0.4]]), within: 1e-15)
+    failed += fails("inverse: singular", linalg.inverse(linalg.Matrix.fromRows([[1, 2], [2, 4]])), "singular")
+    let h = hilbert(6)
+    failed += close("inverse of Hilbert 6, times it, is the identity", (try linalg.inverse(h)).times(h), linalg.Matrix.identity(6), within: 1e-8)
+    failed += near("inverse of Hilbert 3 is exact", (try linalg.inverse(hilbert(3))).at(1, 1), 192.0, within: 1e-10)
+
+    failed += near("determinant 2×2", linalg.determinant(linalg.Matrix.fromRows([[1, 2], [3, 4]])), -2.0, within: 1e-15)
+    failed += near("determinant 3×3", linalg.determinant(a), -1.0, within: 1e-15)
+    failed += near("determinant: singular is 0", linalg.determinant(linalg.Matrix.fromRows([[1, 2], [2, 4]])), 0.0)
+    failed += near("determinant of Hilbert 4", linalg.determinant(hilbert(4)), 1.0 / 6048000.0, within: 1e-18)
+    failed += near("determinant of the identity", linalg.determinant(linalg.Matrix.identity(5)), 1.0)
+    failed += near("determinant with swaps", linalg.determinant(linalg.Matrix.fromRows([[0, 1, 0], [0, 0, 1], [1, 0, 0]])), 1.0)
+
+    let spd = linalg.Matrix.fromRows([[4, 12, -16], [12, 37, -43], [-16, -43, 98]])
+    let c = try linalg.cholesky(spd)
+    failed += close("cholesky: L", c.lower, linalg.Matrix.fromRows([[2, 0, 0], [6, 1, 0], [-8, 5, 3]]))
+    failed += near("cholesky: determinant", c.determinant, 36.0, within: 1e-12)
+    let x = c.solve([1, 2, 3])
+    failed += nearAll("cholesky: solve agrees with LU", x, linalg.solve(spd, [1, 2, 3]).valueOr([]), within: 1e-10)
+    failed += close("cholesky: inverse", c.inverse().times(spd), linalg.Matrix.identity(3), within: 1e-10)
+    failed += fails("cholesky: not positive definite", linalg.cholesky(linalg.Matrix.fromRows([[1, 2], [2, 1]])), "positive definite")
+    failed += fails("cholesky: not symmetric", linalg.cholesky(linalg.Matrix.fromRows([[2, 1], [0, 2]])), "symmetric")
+
+    failed += nearAll("solveTridiagonal", linalg.solveTridiagonal(below: [-1, -1], diagonal: [2, 2, 2], above: [-1, -1], [1, 0, 1]).valueOr([]), [1, 1, 1])
+    // Against solve, on a diagonally dominant 6×6.
+    var g = Numbers()
+    var below: [Float] = []
+    var diagonal: [Float] = []
+    var above: [Float] = []
+    var rhs: [Float] = []
+    for i in 0..6 {
+        diagonal.append(4.0 + g.next())
+        rhs.append(g.next())
+        if i < 5 {
+            below.append(g.next())
+            above.append(g.next())
+        }
+    }
+    var full = linalg.Matrix.diagonal(diagonal)
+    for i in 0..5 {
+        full.set(i + 1, i, below[i])
+        full.set(i, i + 1, above[i])
+    }
+    failed += nearAll("solveTridiagonal agrees with solve", linalg.solveTridiagonal(below: below, diagonal: diagonal, above: above, rhs).valueOr([]), linalg.solve(full, rhs).valueOr([]), within: 1e-14)
+    failed += fails("solveTridiagonal: zero pivot", linalg.solveTridiagonal(below: [1], diagonal: [1, 1], above: [1], [1, 2]), "row 2")
+    failed += holds("solveTridiagonal: one value", linalg.solveTridiagonal(below: [], diagonal: [4], above: [], [2]).valueOr([]) == [0.5])
+    Result.ok(value: failed)
+}
+
+// The QR and least-squares checks.
+fn fitting() -> Result<Int> {
+    var failed = 0
+    let made = randomMatrix(Numbers(), 5, 3)
+    let a = made.0
+    let f = linalg.qr(a)
+    failed += close("qr: Q R = A", f.q.times(f.r), a, within: 1e-14)
+    failed += close("qr: Qᵀ Q = I", f.q.transposed().times(f.q), linalg.Matrix.identity(3), within: 1e-14)
+    var lowerZero = true
+    for i in 0..3 {
+        for j in 0..i {
+            if f.r.at(i, j) != 0.0 {
+                lowerZero = false
+            }
+        }
+    }
+    failed += holds("qr: R is upper triangular", lowerZero)
+    let square = linalg.Matrix.fromRows([[2, 1, -1], [-3, -1, 2], [-2, 1, 2]])
+    failed += nearAll("qr: solve a square system", linalg.qr(square).solve([8, -11, -3]).valueOr([]), [2, 3, -1], within: 1e-13)
+    let line = linalg.Matrix.fromRows([[1, 0], [1, 1], [1, 2], [1, 3]])
+    failed += nearAll("leastSquares: a line", linalg.leastSquares(line, [1, 3, 5, 7.5]).valueOr([]), [0.9, 2.15], within: 1e-14)
+    // The residual of a least-squares fit is at right angles to the columns.
+    let b: [Float] = [0.3, -1.2, 2.5, 0.7, 1.1]
+    let x = linalg.leastSquares(a, b).valueOr([0, 0, 0])
+    let residual = linalg.subtract(a.timesVector(x), b)
+    failed += nearAll("leastSquares: Aᵀ (A x − b) = 0", a.transposed().timesVector(residual), [0, 0, 0], within: 1e-14)
+    failed += fails("leastSquares: dependent columns", linalg.leastSquares(linalg.Matrix.fromRows([[1, 2], [2, 4], [3, 6]]), [1, 2, 3]), "column 2")
+    failed += fails("leastSquares: a zero column", linalg.leastSquares(linalg.Matrix.fromRows([[1, 0], [2, 0], [3, 0]]), [1, 2, 3]), "column 2")
+    Result.ok(value: failed)
+}
+
+// The eigenvalue checks.
+fn eigen() -> Result<Int> {
+    var failed = 0
+    let e = try linalg.symmetricEigen(linalg.Matrix.fromRows([[2, 1], [1, 2]]))
+    failed += nearAll("symmetricEigen: 2×2", e.values, [1, 3], within: 1e-15)
+    let r = 1.0 / sqrt(2.0)
+    failed += nearAll("symmetricEigen: first vector", e.vector(0), [r, -r], within: 1e-15)
+    failed += nearAll("symmetricEigen: second vector", e.vector(1), [r, r], within: 1e-15)
+    let stress = try linalg.symmetricEigen(linalg.Matrix.fromRows([[50, 30], [30, -20]]))
+    failed += nearAll("symmetricEigen: principal stresses", stress.values, [15.0 - sqrt(2125.0), 15.0 + sqrt(2125.0)], within: 1e-12)
+    let t = try linalg.symmetricEigen(linalg.Matrix.fromRows([[2, -1, 0], [-1, 2, -1], [0, -1, 2]]))
+    failed += nearAll("symmetricEigen: second differences", t.values, [2.0 - sqrt(2.0), 2.0, 2.0 + sqrt(2.0)], within: 1e-14)
+    // A V = V Λ, and Vᵀ V = I, on a symmetric 6×6.
+    let made = randomMatrix(Numbers(seed: 777), 6, 6)
+    let s = made.0.plus(made.0.transposed())
+    let big = try linalg.symmetricEigen(s)
+    failed += close("symmetricEigen: A V = V Λ", s.times(big.vectors), big.vectors.times(linalg.Matrix.diagonal(big.values)), within: 1e-13)
+    failed += close("symmetricEigen: Vᵀ V = I", big.vectors.transposed().times(big.vectors), linalg.Matrix.identity(6), within: 1e-14)
+    failed += near("symmetricEigen: the values add up to the trace", big.values.sum(), s.trace, within: 1e-13)
+    failed += holds("symmetricEigen: smallest first", big.values == big.values.sorted())
+    failed += holds("symmetricEigen: few sweeps ({big.sweeps})", big.sweeps < 12)
+    let d = try linalg.symmetricEigen(linalg.Matrix.diagonal([3, 1, 2]))
+    failed += holds("symmetricEigen: diagonal takes no sweeps", d.values == [1.0, 2.0, 3.0] && d.sweeps == 0)
+    failed += fails("symmetricEigen: not symmetric", linalg.symmetricEigen(linalg.Matrix.fromRows([[1, 2], [0, 1]])), "symmetric")
+    Result.ok(value: failed)
+}
+
+// Σ as a k×k matrix, then U Σ Vᵀ.
+fn rebuilt(_ s: linalg.SVD) -> linalg.Matrix {
+    s.u.times(linalg.Matrix.diagonal(s.values)).times(s.v.transposed())
+}
+
+// The SVD checks.
+fn singular() -> Result<Int> {
+    var failed = 0
+    let small = linalg.svd(linalg.Matrix.fromRows([[3, 0], [0, -2], [0, 0]]))
+    failed += nearAll("svd: values", small.values, [3, 2])
+    failed += holds("svd: rank 2", small.rank == 2)
+    let tall = randomMatrix(Numbers(seed: 42), 5, 3).0
+    let s = linalg.svd(tall)
+    failed += close("svd: U Σ Vᵀ = A (5×3)", rebuilt(s), tall, within: 1e-14)
+    failed += close("svd: Uᵀ U = I", s.u.transposed().times(s.u), linalg.Matrix.identity(3), within: 1e-14)
+    failed += close("svd: Vᵀ V = I", s.v.transposed().times(s.v), linalg.Matrix.identity(3), within: 1e-14)
+    failed += holds("svd: largest first", s.values == s.values.sorted().reversed())
+    let wide = tall.transposed()
+    let w = linalg.svd(wide)
+    failed += close("svd: U Σ Vᵀ = A (3×5)", rebuilt(w), wide, within: 1e-14)
+    failed += nearAll("svd: Aᵀ has A's singular values", w.values, s.values, within: 1e-14)
+    // The singular values are the square roots of AᵀA's eigenvalues.
+    let ata = try linalg.symmetricEigen(tall.transposed().times(tall))
+    failed += nearAll("svd: σ² are the eigenvalues of AᵀA", s.values.map { x in x * x }, ata.values.reversed(), within: 1e-14)
+
+    failed += holds("rank of a rank-1 matrix", linalg.rank(linalg.Matrix.fromRows([[1, 2], [2, 4]])) == 1)
+    failed += holds("rank of 1..9", linalg.rank(linalg.Matrix.fromRows([[1, 2, 3], [4, 5, 6], [7, 8, 9]])) == 2)
+    failed += holds("rank of zeros", linalg.rank(linalg.Matrix.zeros(rows: 2, columns: 3)) == 0)
+    failed += near("conditionNumber of the identity", linalg.conditionNumber(linalg.Matrix.identity(3)), 1.0)
+    failed += near("conditionNumber of Hilbert 4", linalg.conditionNumber(hilbert(4)), 15513.738738929038, within: 1e-6)
+    failed += holds("conditionNumber of a singular matrix", !linalg.conditionNumber(linalg.Matrix.fromRows([[1, 0], [0, 0]])).isFinite)
+    let m = linalg.Matrix.fromRows([[4, 7], [2, 6]])
+    failed += close("pseudoInverse of an invertible matrix is its inverse", linalg.pseudoInverse(m), (try linalg.inverse(m)), within: 1e-14)
+    let p = linalg.pseudoInverse(tall)
+    failed += close("pseudoInverse: A A⁺ A = A", tall.times(p).times(tall), tall, within: 1e-14)
+    failed += nearAll("svd: the shortest answer", linalg.svd(linalg.Matrix.fromRows([[1, 1], [1, 1]])).solve([2, 2]), [1, 1], within: 1e-15)
+    failed += close("pseudoInverse of a rank-1 matrix", linalg.pseudoInverse(linalg.Matrix.fromRows([[1, 2], [2, 4]])), linalg.Matrix.fromRows([[0.04, 0.08], [0.08, 0.16]]), within: 1e-15)
+    Result.ok(value: failed)
+}
+
+// The examples in the documentation and the README, as written there.
+fn examples() -> Result<Int> {
+    var failed = 0
+    let a = linalg.Matrix.fromRows([[1, 2], [3, 4]])
+    failed += holds("example: times", a.times(a).describe() == "[  7.0000  10.0000 ]\n[ 15.0000  22.0000 ]")
+    failed += holds("example: identity", linalg.Matrix.identity(2).describe(decimals: 1) == "[ 1.0  0.0 ]\n[ 0.0  1.0 ]")
+    let f = try linalg.lu(linalg.Matrix.fromRows([[2, 1], [1, 3]]))
+    failed += nearAll("example: LU", f.solve([3, 5]), [0.8, 1.4], within: 1e-15)
+    failed += near("example: LU determinant", f.determinant, 5.0, within: 1e-15)
+    let c = try linalg.cholesky(linalg.Matrix.fromRows([[4, 2], [2, 3]]))
+    failed += holds("example: cholesky", c.lower.describe() == "[ 2.0000  0.0000 ]\n[ 1.0000  1.4142 ]")
+    let q = linalg.qr(linalg.Matrix.fromRows([[3, 0], [4, 5]]))
+    failed += close("example: qr", q.q.times(q.r), linalg.Matrix.fromRows([[3, 0], [4, 5]]), within: 1e-15)
+
+    // The README's circuit: 12 V through 2 Ω, then 4 Ω and 6 Ω side by side.
+    let circuit = linalg.Matrix.fromRows([[1, -1, -1], [2, 4, 0], [0, 4, -6]])
+    let currents = linalg.solve(circuit, [0, 12, 0]).valueOr([])
+    failed += nearAll("README: the circuit", currents, [30.0 / 11.0, 18.0 / 11.0, 12.0 / 11.0], within: 1e-14)
+    let beam = linalg.Matrix.fromRows([[1, 0], [1, 1], [1, 2], [1, 3], [1, 4]])
+    let fit = linalg.leastSquares(beam, [0.0, 1.9, 4.1, 6.0, 8.0]).valueOr([])
+    failed += nearAll("README: the fitted line", fit, [-0.02, 2.01], within: 1e-14)
+    Result.ok(value: failed)
+}
+
+fn main() {
+    var failed = try basics()
+    failed += try solving()
+    failed += try fitting()
+    failed += try eigen()
+    failed += try singular()
+    failed += try examples()
+    if failed > 0 {
+        print("\n{failed} failed")
+        exit(1)
+    }
+    print("\nall passed")
+}
